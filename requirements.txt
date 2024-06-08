@@ -1,0 +1,4 @@
+pynput
+schedule
+cryptography
+pywin32
