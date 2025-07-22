@@ -1,4 +1,4 @@
 pynput
 schedule
 cryptography
-pywin32
+pyscreenshot

